@@ -78,13 +78,12 @@ def load_data(_cache_key=None):
             filepath, 
             delimiter=delimiter, 
             low_memory=False,
-            usecols=lambda x: x in colonnes_a_garder or 'commune' in x.lower(),
+            usecols=colonnes_a_garder,
         )
         
-        # Filtrer sur Toulouse Métropole
-        commune_cols = [c for c in df.columns if 'code' in c.lower() and 'commune' in c.lower()]
-        if commune_cols:
-            col_commune = commune_cols[0]
+        # Filtrer sur Toulouse Métropole - utiliser la colonne "Code de la commune du lieu des travaux"
+        col_commune = 'Code de la commune du lieu des travaux'
+        if col_commune in df.columns:
             df = df[df[col_commune].astype(str).isin(codes_insee_tolmetro)].copy()
         
         # Ajouter le type de projet
