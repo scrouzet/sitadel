@@ -73,13 +73,35 @@ def load_data(_cache_key=None):
     
     # Fonction helper pour charger, filtrer et optimiser
     def load_filter_optimize(filepath, type_projet, delimiter=";"):
-        # Charger avec colonnes limitées
+        # Charger TOUTES les colonnes d'abord pour les inspecter
         df = pd.read_csv(
             filepath, 
             delimiter=delimiter, 
             low_memory=False,
-            usecols=colonnes_a_garder,
         )
+        
+        # Garder seulement les colonnes qu'on a besoin ET qui existent
+        cols_to_keep = ['Code de la commune du lieu des travaux', 'Année de dépôt de la DAU', 'TYPE_PROJET']
+        cols_to_keep = [c for c in cols_to_keep if c in df.columns]
+        
+        # Ajouter les autres colonnes si elles existent
+        optional_cols = [
+            "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale",
+            "Catégorie juridique d'un demandeur avéré en tant que personne morale",
+            "Dénomination d'un demandeur avéré en tant que personne morale",
+            "Numéro SIREN d'un demandeur avéré en tant que personne morale",
+            "Numéro SIRET d'un demandeur avéré en tant que personne morale",
+            'Code postal du demandeur',
+            'Localité du terrain',  # Localité du lieu des travaux, pas du demandeur
+            "Numéro d'enregistrement de la DAU",
+        ]
+        
+        for col in optional_cols:
+            if col in df.columns:
+                cols_to_keep.append(col)
+        
+        # Sélectionner les colonnes
+        df = df[cols_to_keep].copy()
         
         # Filtrer sur Toulouse Métropole - utiliser la colonne "Code de la commune du lieu des travaux"
         col_commune = 'Code de la commune du lieu des travaux'
@@ -93,7 +115,7 @@ def load_data(_cache_key=None):
         for col in df.columns:
             if df[col].dtype == 'object':
                 # Convertir les colonnes catégories en type category
-                if col in ['TYPE_PROJET', 'Localité du demandeur']:
+                if col in ['TYPE_PROJET', 'Localité du terrain', 'Localité du demandeur']:
                     df[col] = df[col].astype('category')
                 # Pour les colonnes quasi-vides, utiliser string plutôt que object
                 elif df[col].notna().sum() / len(df) < 0.5:
@@ -131,7 +153,8 @@ def load_data(_cache_key=None):
         "Numéro SIREN d'un demandeur avéré en tant que personne morale": 'SIREN_DEM',
         "Numéro SIRET d'un demandeur avéré en tant que personne morale": 'SIRET_DEM',
         'Code postal du demandeur': 'CODPOST_DEM',
-        'Localité du demandeur': 'LOCALITE_DEM',
+        'Localité du terrain': 'LOCALITE_TRAVAUX',  # Localité du lieu des travaux (prioritaire)
+        'Localité du demandeur': 'LOCALITE_DEM',  # Localité du demandeur (fallback)
     }
     
     # Dictionnaire pour tracker les suppressions par catégorie
@@ -201,7 +224,7 @@ def load_data(_cache_key=None):
     # Colonnes finales à conserver
     colonnes_finales = [
         'AN_DEPOT', 'DENOM_DEM', 'SIREN_DEM', 'SIRET_DEM',
-        'LOCALITE_DEM', 'TYPE_PROJET', 'NUMERO_PERMIS'
+        'LOCALITE_TRAVAUX', 'LOCALITE_DEM', 'TYPE_PROJET', 'NUMERO_PERMIS'
     ]
     
     # Sélectionner uniquement les colonnes finales
@@ -403,7 +426,7 @@ if (recherche or type_recherche == "Toutes les données") and not st.session_sta
             # Colonnes à afficher
             cols_display = [
                 'TYPE_PROJET', 'NUMERO_PERMIS', 'DENOM_DEM', 'SIREN_DEM',
-                'AN_DEPOT', 'LOCALITE_DEM'
+                'AN_DEPOT', 'LOCALITE_TRAVAUX', 'LOCALITE_DEM'
             ]
             cols_display = [c for c in cols_display if c in df_filtered.columns]
             
@@ -430,8 +453,8 @@ if (recherche or type_recherche == "Toutes les données") and not st.session_sta
             col1, col2 = st.columns(2)
             
             with col1:
-                if 'LOCALITE_DEM' in df_filtered.columns:
-                    communes = df_filtered['LOCALITE_DEM'].value_counts().head(10)
+                if 'LOCALITE_TRAVAUX' in df_filtered.columns:
+                    communes = df_filtered['LOCALITE_TRAVAUX'].value_counts().head(10)
                     fig_communes = px.bar(
                         x=communes.values,
                         y=communes.index,
