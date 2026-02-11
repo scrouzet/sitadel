@@ -28,8 +28,18 @@ def normalize_text(text):
     # Minuscules
     return text.lower().strip()
 
-@st.cache_data
-def load_data():
+def get_cache_key():
+    """Invalidate cache when the communes reference file changes"""
+    import hashlib
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    communes_file = os.path.join(script_dir, "data", "Codes INSEE communes Toulouse Métropole.csv")
+    if os.path.exists(communes_file):
+        with open(communes_file, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+    return "default"
+
+@st.cache_data(hash_funcs={str: lambda x: x}, ttl=3600)
+def load_data(_cache_key=None):
     """Charge tous les fichiers CSV et les combine pour Toulouse Métropole avec optimisation mémoire"""
     
     # Chemins des fichiers - relatif au script
@@ -180,8 +190,8 @@ def load_data():
     # Retourner uniquement le dataframe agrégé
     return df_all
 
-# Chargement des données
-df_all = load_data()
+# Chargement des données avec invalidation de cache basée sur le fichier communes
+df_all = load_data(_cache_key=get_cache_key())
 
 # Titre
 st.title("🏗️ Explorateur de Permis de Construire - Toulouse")
