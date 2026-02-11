@@ -13,6 +13,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Initialiser la session_state pour gérer l'accueil
+if 'reset_search' not in st.session_state:
+    st.session_state.reset_search = False
+
 def normalize_text(text):
     """Normalise le texte pour améliorer la recherche: supprime accents, tirets, espaces multiples"""
     if pd.isna(text):
@@ -199,6 +203,12 @@ st.markdown("---")
 
 # Barre latérale pour la recherche
 with st.sidebar:
+    # Bouton pour revenir à l'accueil
+    if st.button("🏠 Accueil", use_container_width=True):
+        st.session_state.reset_search = True
+        st.rerun()
+    
+    st.markdown("---")
     st.header("🔍 Recherche")
     
     # Choix du type de recherche
@@ -231,11 +241,6 @@ with st.sidebar:
         recherche = ""
         col_recherche = None
     
-    # Options d'affichage
-    st.markdown("---")
-    st.subheader("Options")
-    afficher_details = st.checkbox("Afficher tous les détails", value=False)
-    
     # Avertissement pour les recherches par nom
     if type_recherche == "Nom d'entreprise":
         st.warning(
@@ -244,7 +249,7 @@ with st.sidebar:
         )
 
 # Filtrer les résultats
-if recherche or type_recherche == "Toutes les données":
+if (recherche or type_recherche == "Toutes les données") and not st.session_state.reset_search:
     # Filtrage selon le type de recherche
     if type_recherche == "Nom d'entreprise":
         # Normaliser la recherche et les données pour la comparaison
@@ -341,14 +346,11 @@ if recherche or type_recherche == "Toutes les données":
             st.subheader("Liste des projets")
             
             # Colonnes à afficher
-            if afficher_details:
-                cols_display = df_filtered.columns.tolist()
-            else:
-                cols_display = [
-                    'TYPE_PROJET', 'NUMERO_PERMIS', 'DENOM_DEM', 'SIREN_DEM',
-                    'AN_DEPOT', 'LOCALITE_DEM'
-                ]
-                cols_display = [c for c in cols_display if c in df_filtered.columns]
+            cols_display = [
+                'TYPE_PROJET', 'NUMERO_PERMIS', 'DENOM_DEM', 'SIREN_DEM',
+                'AN_DEPOT', 'LOCALITE_DEM'
+            ]
+            cols_display = [c for c in cols_display if c in df_filtered.columns]
             
             # Affichage du tableau
             st.dataframe(
@@ -405,6 +407,10 @@ if recherche or type_recherche == "Toutes les données":
             st.text(f"  • {ent}")
 
 else:
+    # Réinitialiser le flag
+    if st.session_state.reset_search:
+        st.session_state.reset_search = False
+    
     # Affichage initial
     st.info("👈 Utilisez la barre latérale pour rechercher une entreprise ou un numéro SIREN/SIRET, ou sélectionnez 'Toutes les données'")
     
