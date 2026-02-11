@@ -30,42 +30,86 @@ def normalize_text(text):
 
 @st.cache_data
 def load_data():
-    """Charge tous les fichiers CSV et les combine"""
+    """Charge tous les fichiers CSV et les combine pour Toulouse Métropole avec optimisation mémoire"""
     
     # Chemins des fichiers - relatif au script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_path = os.path.join(script_dir, "data", "")
     
-    # Chargement des fichiers
-    df_logements = pd.read_csv(
+    # Charger la liste des communes de Toulouse Métropole
+    df_communes_tolmétro = pd.read_csv(
+        base_path + "Codes INSEE communes Toulouse Métropole.csv",
+        delimiter=","
+    )
+    codes_insee_tolmetro = set(df_communes_tolmétro['Code INSEE'].astype(str))
+    
+    # Colonnes utiles de chaque fichier (pour réduire la mémoire)
+    colonnes_a_garder = [
+        'Code de la commune du lieu des travaux',
+        'Année de dépôt de la DAU',
+        "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale",
+        "Catégorie juridique d'un demandeur avéré en tant que personne morale",
+        "Dénomination d'un demandeur avéré en tant que personne morale",
+        "Numéro SIREN d'un demandeur avéré en tant que personne morale",
+        "Numéro SIRET d'un demandeur avéré en tant que personne morale",
+        'Code postal du demandeur',
+        'Localité du demandeur',
+        "Numéro d'enregistrement de la DAU",
+    ]
+    
+    # Fonction helper pour charger, filtrer et optimiser
+    def load_filter_optimize(filepath, type_projet, delimiter=";"):
+        # Charger avec colonnes limitées
+        df = pd.read_csv(
+            filepath, 
+            delimiter=delimiter, 
+            low_memory=False,
+            usecols=lambda x: x in colonnes_a_garder or 'commune' in x.lower(),
+        )
+        
+        # Filtrer sur Toulouse Métropole
+        commune_cols = [c for c in df.columns if 'code' in c.lower() and 'commune' in c.lower()]
+        if commune_cols:
+            col_commune = commune_cols[0]
+            df = df[df[col_commune].astype(str).isin(codes_insee_tolmetro)].copy()
+        
+        # Ajouter le type de projet
+        df['TYPE_PROJET'] = type_projet
+        
+        # Optimiser les types de données
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Convertir les colonnes catégories en type category
+                if col in ['TYPE_PROJET', 'Localité du demandeur']:
+                    df[col] = df[col].astype('category')
+                # Pour les colonnes quasi-vides, utiliser string plutôt que object
+                elif df[col].notna().sum() / len(df) < 0.5:
+                    df[col] = df[col].astype('string')
+        
+        return df
+    
+    # Charger et filtrer les 4 fichiers
+    df_logements = load_filter_optimize(
         base_path + "Liste-des-autorisations-durbanisme-creant-des-logements.2026-01.csv",
-        delimiter=";",
-        low_memory=False
+        'Logements'
     )
-    df_logements['TYPE_PROJET'] = 'Logements'
     
-    df_locaux = pd.read_csv(
+    df_locaux = load_filter_optimize(
         base_path + "Liste-des-autorisations-durbanisme-creant-des-locaux-non-residentiels.2026-01.csv",
-        delimiter=";",
-        low_memory=False
+        'Locaux non résidentiels'
     )
-    df_locaux['TYPE_PROJET'] = 'Locaux non résidentiels'
     
-    df_demolir = pd.read_csv(
+    df_demolir = load_filter_optimize(
         base_path + "Liste-des-permis-de-demolir.2026-01.csv",
-        delimiter=";",
-        low_memory=False
+        'Démolition'
     )
-    df_demolir['TYPE_PROJET'] = 'Démolition'
     
-    df_amenager = pd.read_csv(
+    df_amenager = load_filter_optimize(
         base_path + "Liste-des-permis-damenager.2026-01.csv",
-        delimiter=";",
-        low_memory=False
+        'Aménagement'
     )
-    df_amenager['TYPE_PROJET'] = 'Aménagement'
     
-    # Mapping des colonnes réelles pour harmoniser les noms
+    # Mapping des colonnes réelles pour harmoniser les noms (version minimaliste)
     colonnes_mapping = {
         'Année de dépôt de la DAU': 'AN_DEPOT',
         "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale": 'APE_DEM',
@@ -77,40 +121,39 @@ def load_data():
         'Localité du demandeur': 'LOCALITE_DEM',
     }
     
-    # Renommer les colonnes pour tous les dataframes
+    # Renommer les colonnes standardisées
     for df in [df_logements, df_locaux, df_demolir, df_amenager]:
         for col_original, col_nouveau in colonnes_mapping.items():
             if col_original in df.columns:
                 df.rename(columns={col_original: col_nouveau}, inplace=True)
-    
-    # Colonnes harmonisées
-    colonnes_communes = [
-        'AN_DEPOT', 'APE_DEM', 'CJ_DEM', 'DENOM_DEM', 'SIREN_DEM', 'SIRET_DEM',
-        'CODPOST_DEM', 'LOCALITE_DEM', 'TYPE_PROJET'
-    ]
-    
-    # Ajouter les colonnes spécifiques pour identifier le numéro de permis
-    # Pour logements et locaux, chercher NUM_DAU; pour demolir et amenager, adapter à ce qui existe
-    for df in [df_logements, df_locaux, df_demolir, df_amenager]:
-        # Chercher les colonnes qui pourraient contenir un numéro de permis
-        num_cols = [c for c in df.columns if 'numéro' in c.lower() and 'permis' in c.lower() or 'dau' in c.lower()]
+        
+        # Ajouter NUMERO_PERMIS
+        num_cols = [c for c in df.columns if 'numéro' in c.lower() and 'enregistrement' in c.lower()]
         if num_cols:
-            df['NUMERO_PERMIS'] = df[num_cols[0]]
+            df.rename(columns={num_cols[0]: 'NUMERO_PERMIS'}, inplace=True)
         else:
             df['NUMERO_PERMIS'] = None
     
-    colonnes_communes.append('NUMERO_PERMIS')
+    # Colonnes finales à conserver
+    colonnes_finales = [
+        'AN_DEPOT', 'DENOM_DEM', 'SIREN_DEM', 'SIRET_DEM',
+        'LOCALITE_DEM', 'TYPE_PROJET', 'NUMERO_PERMIS'
+    ]
     
-    # Sélectionner uniquement les colonnes communes qui existent
-    def select_existing_cols(df, cols):
-        return df[[c for c in cols if c in df.columns]].copy()
+    # Sélectionner uniquement les colonnes finales
+    def select_final_cols(df):
+        cols = [c for c in colonnes_finales if c in df.columns]
+        return df[cols].copy()
     
-    df_log = select_existing_cols(df_logements, colonnes_communes)
-    df_loc = select_existing_cols(df_locaux, colonnes_communes)
-    df_dem = select_existing_cols(df_demolir, colonnes_communes)
-    df_ame = select_existing_cols(df_amenager, colonnes_communes)
+    df_log = select_final_cols(df_logements)
+    df_loc = select_final_cols(df_locaux)
+    df_dem = select_final_cols(df_demolir)
+    df_ame = select_final_cols(df_amenager)
     
-    # Ajouter des colonnes manquantes avec NaN
+    # Supprimer les dataframes originaux pour libérer la mémoire
+    del df_logements, df_locaux, df_demolir, df_amenager
+    
+    # Ajouter les colonnes manquantes avec NaN
     all_cols = set()
     for df in [df_log, df_loc, df_dem, df_ame]:
         all_cols.update(df.columns)
@@ -123,14 +166,22 @@ def load_data():
     # Combiner tous les dataframes
     df_all = pd.concat([df_log, df_loc, df_dem, df_ame], ignore_index=True)
     
-    # Convertir AN_DEPOT en numérique si la colonne existe
+    # Supprimer les dataframes temporaires
+    del df_log, df_loc, df_dem, df_ame
+    
+    # Convertir AN_DEPOT en numérique
     if 'AN_DEPOT' in df_all.columns:
         df_all['AN_DEPOT'] = pd.to_numeric(df_all['AN_DEPOT'], errors='coerce')
     
-    return df_all, df_logements, df_locaux, df_demolir, df_amenager
+    # Convertir TYPE_PROJET en category pour réduire la mémoire
+    if 'TYPE_PROJET' in df_all.columns:
+        df_all['TYPE_PROJET'] = df_all['TYPE_PROJET'].astype('category')
+    
+    # Retourner uniquement le dataframe agrégé
+    return df_all
 
 # Chargement des données
-df_all, df_logements, df_locaux, df_demolir, df_amenager = load_data()
+df_all = load_data()
 
 # Titre
 st.title("🏗️ Explorateur de Permis de Construire - Toulouse")
@@ -347,11 +398,13 @@ else:
     # Affichage initial
     st.info("👈 Utilisez la barre latérale pour rechercher une entreprise ou un numéro SIREN/SIRET, ou sélectionnez 'Toutes les données'")
     
+    st.success("✅ **Données filtrées**: Les 37 communes de Toulouse Métropole (Département 31)")
+    
     st.warning("⚠️ **Attention données incomplètes**: Seuls **29% des projets** ont un nom d'entreprise associé. "
-               "Les projets de logements (3,711) et d'aménagement (252) n'ont généralement pas d'entreprise renseignée.")
+               "Les projets de logements et d'aménagement n'ont généralement pas d'entreprise renseignée.")
     
     # Statistiques globales
-    st.subheader("📊 Aperçu général de la base de données")
+    st.subheader("📊 Aperçu général - Toulouse Métropole")
     
     col1, col2, col3, col4 = st.columns(4)
     
