@@ -135,18 +135,69 @@ def load_data(_cache_key=None):
         'Localité du demandeur': 'LOCALITE_DEM',
     }
     
-    # Renommer les colonnes standardisées
-    for df in [df_logements, df_locaux, df_demolir, df_amenager]:
+    # Dictionnaire pour tracker les suppressions par catégorie
+    suppressions = {
+        'Logements': {'avant': 0, 'apres': 0, 'details': {}},
+        'Locaux non résidentiels': {'avant': 0, 'apres': 0, 'details': {}},
+        'Démolition': {'avant': 0, 'apres': 0, 'details': {}},
+        'Aménagement': {'avant': 0, 'apres': 0, 'details': {}}
+    }
+    
+    dfs_and_names = [
+        (df_logements, 'Logements'),
+        (df_locaux, 'Locaux non résidentiels'),
+        (df_demolir, 'Démolition'),
+        (df_amenager, 'Aménagement')
+    ]
+    
+    # Renommer et nettoyer les colonnes
+    cleaned_dfs = {}
+    for df_tmp, categorie in dfs_and_names:
+        suppressions[categorie]['avant'] = len(df_tmp)
+        
+        # Renommer les colonnes
         for col_original, col_nouveau in colonnes_mapping.items():
-            if col_original in df.columns:
-                df.rename(columns={col_original: col_nouveau}, inplace=True)
+            if col_original in df_tmp.columns:
+                df_tmp.rename(columns={col_original: col_nouveau}, inplace=True)
         
         # Ajouter NUMERO_PERMIS
-        num_cols = [c for c in df.columns if 'numéro' in c.lower() and 'enregistrement' in c.lower()]
+        num_cols = [c for c in df_tmp.columns if 'numéro' in c.lower() and 'enregistrement' in c.lower()]
         if num_cols:
-            df.rename(columns={num_cols[0]: 'NUMERO_PERMIS'}, inplace=True)
+            df_tmp.rename(columns={num_cols[0]: 'NUMERO_PERMIS'}, inplace=True)
         else:
-            df['NUMERO_PERMIS'] = None
+            df_tmp['NUMERO_PERMIS'] = None
+        
+        # Convertir l'année en entier et nettoyer les valeurs invalides
+        if 'AN_DEPOT' in df_tmp.columns:
+            # Convertir en string pour traiter
+            df_tmp['AN_DEPOT'] = df_tmp['AN_DEPOT'].astype(str).str.strip()
+            
+            # Compter les valeurs non numériques avant de les supprimer
+            non_numeric_mask = ~df_tmp['AN_DEPOT'].str.isdigit()
+            suppressions[categorie]['details']['Non-numériques (AN_DEPOT, etc.)'] = non_numeric_mask.sum()
+            
+            # Supprimer les valeurs non numériques
+            df_tmp.loc[non_numeric_mask, 'AN_DEPOT'] = pd.NA
+            
+            # Convertir en entier
+            df_tmp['AN_DEPOT'] = pd.to_numeric(df_tmp['AN_DEPOT'], errors='coerce')
+            
+            # Filtrer les années aberrantes (avant 2000 ou après 2030)
+            before_filter = len(df_tmp)
+            mask = (df_tmp['AN_DEPOT'].isna()) | ((df_tmp['AN_DEPOT'] >= 2000) & (df_tmp['AN_DEPOT'] <= 2030))
+            df_tmp = df_tmp[mask].copy()
+            aberrantes = before_filter - len(df_tmp)
+            if aberrantes > 0:
+                suppressions[categorie]['details']['Années aberrantes (< 2000 ou > 2030)'] = aberrantes
+        
+        suppressions[categorie]['apres'] = len(df_tmp)
+        cleaned_dfs[categorie] = df_tmp
+    
+    # Récupérer les dataframes nettoyées
+    df_logements = cleaned_dfs['Logements']
+    df_locaux = cleaned_dfs['Locaux non résidentiels']
+    df_demolir = cleaned_dfs['Démolition']
+    df_amenager = cleaned_dfs['Aménagement']
     
     # Colonnes finales à conserver
     colonnes_finales = [
@@ -191,11 +242,16 @@ def load_data(_cache_key=None):
     if 'TYPE_PROJET' in df_all.columns:
         df_all['TYPE_PROJET'] = df_all['TYPE_PROJET'].astype('category')
     
-    # Retourner uniquement le dataframe agrégé
-    return df_all
+    # Retourner le dataframe et les statistiques de suppression
+    return {
+        'data': df_all,
+        'suppressions': suppressions
+    }
 
 # Chargement des données avec invalidation de cache basée sur le fichier communes
-df_all = load_data(_cache_key=get_cache_key())
+result = load_data(_cache_key=get_cache_key())
+df_all = result['data']
+suppressions_data = result['suppressions']
 
 # Titre
 st.title("🏗️ Explorateur de Permis de Construire - Toulouse")
@@ -418,6 +474,29 @@ else:
     
     st.warning("⚠️ **Attention données incomplètes**: Seuls **29% des projets** ont un nom d'entreprise associé. "
                "Les projets de logements et d'aménagement n'ont généralement pas d'entreprise renseignée.")
+    
+    # Afficher les statistiques de nettoyage des données
+    with st.expander("📋 Détails du nettoyage des données"):
+        st.markdown("**Lignes supprimées par défaut de données:**")
+        
+        for categorie, stats in suppressions_data.items():
+            avant = stats['avant']
+            apres = stats['apres']
+            supprimees = avant - apres
+            pct = (supprimees / avant * 100) if avant > 0 else 0
+            
+            st.markdown(f"**{categorie}**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Avant", avant)
+            with col2:
+                st.metric(f"Supprimées ({pct:.1f}%)", supprimees)
+            
+            # Détails des suppressions
+            if stats['details']:
+                for raison, nombre in stats['details'].items():
+                    st.text(f"  • {raison}: {nombre} lignes")
+            st.markdown("")
     
     # Statistiques globales
     st.subheader("📊 Aperçu général - Toulouse Métropole")
