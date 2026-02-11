@@ -143,7 +143,7 @@ with st.sidebar:
     # Choix du type de recherche
     type_recherche = st.radio(
         "Type de recherche",
-        ["Nom d'entreprise", "SIREN", "SIRET"]
+        ["Nom d'entreprise", "SIREN", "SIRET", "Toutes les données"]
     )
     
     # Champ de recherche
@@ -159,20 +159,31 @@ with st.sidebar:
             placeholder="Ex: 123456789"
         )
         col_recherche = 'SIREN_DEM'
-    else:
+    elif type_recherche == "SIRET":
         recherche = st.text_input(
             "Numéro SIRET",
             placeholder="Ex: 12345678900012"
         )
         col_recherche = 'SIRET_DEM'
+    else:
+        st.info("ℹ️ Affichage de toutes les données disponibles")
+        recherche = ""
+        col_recherche = None
     
     # Options d'affichage
     st.markdown("---")
     st.subheader("Options")
     afficher_details = st.checkbox("Afficher tous les détails", value=False)
+    
+    # Avertissement pour les recherches par nom
+    if type_recherche == "Nom d'entreprise":
+        st.warning(
+            "⚠️ **Important**: Seuls 29% des projets ont un nom d'entreprise. "
+            "Les logements et aménagements n'ont généralement pas de nom d'entreprise."
+        )
 
 # Filtrer les résultats
-if recherche:
+if recherche or type_recherche == "Toutes les données":
     # Filtrage selon le type de recherche
     if type_recherche == "Nom d'entreprise":
         # Normaliser la recherche et les données pour la comparaison
@@ -180,11 +191,19 @@ if recherche:
         df_filtered = df_all[
             df_all[col_recherche].apply(lambda x: recherche_norm in normalize_text(x))
         ]
-    else:
+    elif type_recherche == "SIREN":
         # Pour SIREN et SIRET, recherche exacte (sensible aux tirets)
         df_filtered = df_all[
             df_all[col_recherche].astype(str).str.contains(recherche, na=False)
         ]
+    elif type_recherche == "SIRET":
+        # Pour SIRET
+        df_filtered = df_all[
+            df_all[col_recherche].astype(str).str.contains(recherche, na=False)
+        ]
+    else:
+        # Toutes les données
+        df_filtered = df_all.copy()
     
     if len(df_filtered) > 0:
         st.success(f"✅ {len(df_filtered)} projet(s) trouvé(s)")
@@ -326,7 +345,10 @@ if recherche:
 
 else:
     # Affichage initial
-    st.info("👈 Utilisez la barre latérale pour rechercher une entreprise ou un numéro SIREN/SIRET")
+    st.info("👈 Utilisez la barre latérale pour rechercher une entreprise ou un numéro SIREN/SIRET, ou sélectionnez 'Toutes les données'")
+    
+    st.warning("⚠️ **Attention données incomplètes**: Seuls **29% des projets** ont un nom d'entreprise associé. "
+               "Les projets de logements (3,711) et d'aménagement (252) n'ont généralement pas d'entreprise renseignée.")
     
     # Statistiques globales
     st.subheader("📊 Aperçu général de la base de données")
@@ -338,7 +360,8 @@ else:
     
     with col2:
         if 'DENOM_DEM' in df_all.columns:
-            st.metric("Entreprises distinctes", df_all['DENOM_DEM'].nunique())
+            with_denom = df_all['DENOM_DEM'].notna().sum()
+            st.metric("Avec nom d'entreprise", f"{with_denom} ({100*with_denom/len(df_all):.0f}%)")
         else:
             st.metric("Entreprises distinctes", "N/A")
     
