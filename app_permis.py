@@ -439,3 +439,31 @@ else:
         color=type_counts.index
     )
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Top entreprises (avec plus de 10 projets)
+    st.subheader("Top entreprises (10+ projets)")
+    
+    # Calculer le nombre de projets par entreprise
+    entreprises_count = df_all[df_all['DENOM_DEM'].notna()]['DENOM_DEM'].value_counts()
+    top_entreprises = entreprises_count[entreprises_count >= 10].sort_values(ascending=False)
+    
+    if len(top_entreprises) > 0:
+        fig_entreprises = px.bar(
+            x=top_entreprises.index,
+            y=top_entreprises.values,
+            labels={'x': 'Entreprise', 'y': 'Nombre de projets'},
+            title=f"Répartition des {len(top_entreprises)} entreprises ayant 10+ projets",
+            color=top_entreprises.values,
+            color_continuous_scale='Viridis'
+        )
+        fig_entreprises.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_entreprises, use_container_width=True)
+        
+        # Table récapitulative
+        st.dataframe(
+            top_entreprises.reset_index().rename(columns={'index': 'Entreprise', 'DENOM_DEM': 'Nombre de projets'}),
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.info("Aucune entreprise avec 10+ projets dans les données.")
