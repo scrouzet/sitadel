@@ -13,574 +13,178 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialiser la session_state pour gérer l'accueil
-if 'reset_search' not in st.session_state:
-    st.session_state.reset_search = False
+def clean_column_name(name):
+    """Normalise les noms de colonnes pour ignorer accents, casses et apostrophes"""
+    if not isinstance(name, str): return str(name)
+    name = name.lower()
+    # Normalisation Unicode (supprime les accents)
+    name = ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
+    # Remplace les apostrophes courbes par des droites et supprime les caractères spéciaux
+    name = name.replace("’", "'").replace("'", " ")
+    return re.sub(r'[^a-z0-9]', ' ', name).strip()
 
-def normalize_text(text):
-    """Normalise le texte pour améliorer la recherche: supprime accents, tirets, espaces multiples"""
-    if pd.isna(text):
-        return ""
-    text = str(text)
-    # Supprimer les accents
-    text = ''.join(c for c in unicodedata.normalize('NFD', text)
-                   if unicodedata.category(c) != 'Mn')
-    # Remplacer tirets et caractères spéciaux par espaces
-    text = re.sub(r'[-_/.]', ' ', text)
-    # Supprimer espaces multiples
-    text = re.sub(r'\s+', ' ', text)
-    # Minuscules
-    return text.lower().strip()
-
-def get_cache_key():
-    """Invalidate cache when the communes reference file changes"""
-    import hashlib
+@st.cache_data(ttl=3600)
+def load_data():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    communes_file = os.path.join(script_dir, "data", "Codes INSEE communes Toulouse Métropole.csv")
-    if os.path.exists(communes_file):
-        with open(communes_file, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
-    return "default"
-
-@st.cache_data(hash_funcs={str: lambda x: x}, ttl=3600)
-def load_data(_cache_key=None):
-    """Charge tous les fichiers CSV et les combine pour Toulouse Métropole avec optimisation mémoire"""
+    data_dir = os.path.join(script_dir, "data")
     
-    # Chemins des fichiers - relatif au script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_path = os.path.join(script_dir, "data", "")
+    # 1. Référentiel Communes
+    communes_file = os.path.join(data_dir, "Codes INSEE communes Toulouse Métropole.csv")
+    df_communes = pd.read_csv(communes_file, delimiter=",")
+    codes_insee_tolmetro = set(df_communes['Code INSEE'].astype(str).str.strip())
     
-    # Charger la liste des communes de Toulouse Métropole
-    df_communes_tolmétro = pd.read_csv(
-        base_path + "Codes INSEE communes Toulouse Métropole.csv",
-        delimiter=","
-    )
-    codes_insee_tolmetro = set(df_communes_tolmétro['Code INSEE'].astype(str))
+    # Mapping basé sur des noms "nettoyés" (sans accents, minuscules)
+    CLEAN_TARGETS = {
+        'code de la commune du lieu des travaux': 'CODE_COMMUNE',
+        'annee de depot': 'AN_DEPOT',
+        'denomination d un demandeur': 'DENOM_DEM',
+        'numero siren': 'SIREN_DEM',
+        'numero siret': 'SIRET_DEM',
+        'numero d enregistrement': 'NUMERO_PERMIS',
+        'localite du terrain': 'LOCALITE_TRAVAUX'
+    }
     
-    # Colonnes utiles de chaque fichier (pour réduire la mémoire)
-    colonnes_a_garder = [
-        'Code de la commune du lieu des travaux',
-        'Année de dépôt de la DAU',
-        "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale",
-        "Catégorie juridique d'un demandeur avéré en tant que personne morale",
-        "Dénomination d'un demandeur avéré en tant que personne morale",
-        "Numéro SIREN d'un demandeur avéré en tant que personne morale",
-        "Numéro SIRET d'un demandeur avéré en tant que personne morale",
-        'Code postal du demandeur',
-        'Localité du demandeur',
-        "Numéro d'enregistrement de la DAU",
-    ]
+    COLONNES_FINALES = ['TYPE_PROJET', 'NUMERO_PERMIS', 'AN_DEPOT', 'CODE_COMMUNE', 'DENOM_DEM', 'SIREN_DEM', 'SIRET_DEM', 'LOCALITE_TRAVAUX']
     
-    # Fonction helper pour charger, filtrer et optimiser
-    def load_filter_optimize(filepath, type_projet, delimiter=";"):
-        # Charger TOUTES les colonnes d'abord pour les inspecter
-        df = pd.read_csv(
-            filepath, 
-            delimiter=delimiter, 
-            low_memory=False,
-        )
+    def charger_fichier(filepath, type_projet):
+        # Essai systématique de l'encodage pour éviter les erreurs
+        try:
+            df = pd.read_csv(filepath, delimiter=";", low_memory=False, encoding='utf-8-sig', dtype=str)
+        except:
+            df = pd.read_csv(filepath, delimiter=";", low_memory=False, encoding='cp1252', dtype=str)
         
-        # Garder seulement les colonnes qu'on a besoin ET qui existent
-        cols_to_keep = ['Code de la commune du lieu des travaux', 'Année de dépôt de la DAU', 'TYPE_PROJET']
-        cols_to_keep = [c for c in cols_to_keep if c in df.columns]
+        # Renommage intelligent
+        mapping = {}
+        for col in df.columns:
+            cleaned = clean_column_name(col)
+            # On cherche si l'une de nos cibles est contenue dans le nom nettoyé
+            for target_clean, target_name in CLEAN_TARGETS.items():
+                if target_clean in cleaned:
+                    mapping[col] = target_name
+                    break
         
-        # Ajouter les autres colonnes si elles existent
-        optional_cols = [
-            "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale",
-            "Catégorie juridique d'un demandeur avéré en tant que personne morale",
-            "Dénomination d'un demandeur avéré en tant que personne morale",
-            "Numéro SIREN d'un demandeur avéré en tant que personne morale",
-            "Numéro SIRET d'un demandeur avéré en tant que personne morale",
-            'Code postal du demandeur',
-            'Localité du terrain',  # Localité du lieu des travaux, pas du demandeur
-            "Numéro d'enregistrement de la DAU",
-        ]
-        
-        for col in optional_cols:
-            if col in df.columns:
-                cols_to_keep.append(col)
-        
-        # Sélectionner les colonnes
-        df = df[cols_to_keep].copy()
-        
-        # Filtrer sur Toulouse Métropole - utiliser la colonne "Code de la commune du lieu des travaux"
-        col_commune = 'Code de la commune du lieu des travaux'
-        if col_commune in df.columns:
-            df = df[df[col_commune].astype(str).isin(codes_insee_tolmetro)].copy()
-        
-        # Ajouter le type de projet
+        df = df.rename(columns=mapping)
         df['TYPE_PROJET'] = type_projet
         
-        # Optimiser les types de données
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                # Convertir les colonnes catégories en type category
-                if col in ['TYPE_PROJET', 'Localité du terrain', 'Localité du demandeur']:
-                    df[col] = df[col].astype('category')
-                # Pour les colonnes quasi-vides, utiliser string plutôt que object
-                elif df[col].notna().sum() / len(df) < 0.5:
-                    df[col] = df[col].astype('string')
-        
-        return df
-    
-    # Charger et filtrer les 4 fichiers
-    df_logements = load_filter_optimize(
-        base_path + "Liste-des-autorisations-durbanisme-creant-des-logements.2026-01.csv",
-        'Logements'
-    )
-    
-    df_locaux = load_filter_optimize(
-        base_path + "Liste-des-autorisations-durbanisme-creant-des-locaux-non-residentiels.2026-01.csv",
-        'Locaux non résidentiels'
-    )
-    
-    df_demolir = load_filter_optimize(
-        base_path + "Liste-des-permis-de-demolir.2026-01.csv",
-        'Démolition'
-    )
-    
-    df_amenager = load_filter_optimize(
-        base_path + "Liste-des-permis-damenager.2026-01.csv",
-        'Aménagement'
-    )
-    
-    # Mapping des colonnes réelles pour harmoniser les noms (version minimaliste)
-    colonnes_mapping = {
-        'Année de dépôt de la DAU': 'AN_DEPOT',
-        "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale": 'APE_DEM',
-        "Catégorie juridique d'un demandeur avéré en tant que personne morale": 'CJ_DEM',
-        "Dénomination d'un demandeur avéré en tant que personne morale": 'DENOM_DEM',
-        "Numéro SIREN d'un demandeur avéré en tant que personne morale": 'SIREN_DEM',
-        "Numéro SIRET d'un demandeur avéré en tant que personne morale": 'SIRET_DEM',
-        'Code postal du demandeur': 'CODPOST_DEM',
-        'Localité du terrain': 'LOCALITE_TRAVAUX',  # Localité du lieu des travaux (prioritaire)
-        'Localité du demandeur': 'LOCALITE_DEM',  # Localité du demandeur (fallback)
+        # Sécurité : créer les colonnes si le mapping a échoué
+        for col in COLONNES_FINALES:
+            if col not in df.columns: df[col] = None
+            
+        # Nettoyage des données
+        if 'CODE_COMMUNE' in df.columns:
+            df['CODE_COMMUNE'] = df['CODE_COMMUNE'].str.strip()
+            df = df[df['CODE_COMMUNE'].isin(codes_insee_tolmetro)].copy()
+            
+        if 'AN_DEPOT' in df.columns:
+            df['AN_DEPOT'] = pd.to_numeric(df['AN_DEPOT'], errors='coerce')
+            df = df.dropna(subset=['AN_DEPOT'])
+            
+        return df[COLONNES_FINALES]
+
+    fichiers = {
+        'Logements': 'Liste-des-autorisations-durbanisme-creant-des-logements.2026-01.csv',
+        'Locaux': 'Liste-des-autorisations-durbanisme-creant-des-locaux-non-residentiels.2026-01.csv',
+        'Démolition': 'Liste-des-permis-de-demolir.2026-01.csv',
+        'Aménagement': 'Liste-des-permis-damenager.2026-01.csv'
     }
     
-    # Dictionnaire pour tracker les suppressions par catégorie
-    suppressions = {
-        'Logements': {'avant': 0, 'apres': 0, 'details': {}},
-        'Locaux non résidentiels': {'avant': 0, 'apres': 0, 'details': {}},
-        'Démolition': {'avant': 0, 'apres': 0, 'details': {}},
-        'Aménagement': {'avant': 0, 'apres': 0, 'details': {}}
-    }
-    
-    dfs_and_names = [
-        (df_logements, 'Logements'),
-        (df_locaux, 'Locaux non résidentiels'),
-        (df_demolir, 'Démolition'),
-        (df_amenager, 'Aménagement')
-    ]
-    
-    # Renommer et nettoyer les colonnes
-    cleaned_dfs = {}
-    for df_tmp, categorie in dfs_and_names:
-        suppressions[categorie]['avant'] = len(df_tmp)
-        
-        # Renommer les colonnes
-        for col_original, col_nouveau in colonnes_mapping.items():
-            if col_original in df_tmp.columns:
-                df_tmp.rename(columns={col_original: col_nouveau}, inplace=True)
-        
-        # Ajouter NUMERO_PERMIS
-        num_cols = [c for c in df_tmp.columns if 'numéro' in c.lower() and 'enregistrement' in c.lower()]
-        if num_cols:
-            df_tmp.rename(columns={num_cols[0]: 'NUMERO_PERMIS'}, inplace=True)
-        else:
-            df_tmp['NUMERO_PERMIS'] = None
-        
-        # Convertir l'année en entier et nettoyer les valeurs invalides
-        if 'AN_DEPOT' in df_tmp.columns:
-            # Convertir en string pour traiter
-            df_tmp['AN_DEPOT'] = df_tmp['AN_DEPOT'].astype(str).str.strip()
+    all_dfs = []
+    for label, name in fichiers.items():
+        path = os.path.join(data_dir, name)
+        if os.path.exists(path):
+            all_dfs.append(charger_fichier(path, label))
             
-            # Compter les valeurs non numériques avant de les supprimer
-            non_numeric_mask = ~df_tmp['AN_DEPOT'].str.isdigit()
-            suppressions[categorie]['details']['Non-numériques (AN_DEPOT, etc.)'] = non_numeric_mask.sum()
-            
-            # Supprimer les valeurs non numériques
-            df_tmp.loc[non_numeric_mask, 'AN_DEPOT'] = pd.NA
-            
-            # Convertir en entier
-            df_tmp['AN_DEPOT'] = pd.to_numeric(df_tmp['AN_DEPOT'], errors='coerce')
-            
-            # Filtrer les années aberrantes (avant 2000 ou après 2030)
-            before_filter = len(df_tmp)
-            mask = (df_tmp['AN_DEPOT'].isna()) | ((df_tmp['AN_DEPOT'] >= 2000) & (df_tmp['AN_DEPOT'] <= 2030))
-            df_tmp = df_tmp[mask].copy()
-            aberrantes = before_filter - len(df_tmp)
-            if aberrantes > 0:
-                suppressions[categorie]['details']['Années aberrantes (< 2000 ou > 2030)'] = aberrantes
-        
-        suppressions[categorie]['apres'] = len(df_tmp)
-        cleaned_dfs[categorie] = df_tmp
-    
-    # Récupérer les dataframes nettoyées
-    df_logements = cleaned_dfs['Logements']
-    df_locaux = cleaned_dfs['Locaux non résidentiels']
-    df_demolir = cleaned_dfs['Démolition']
-    df_amenager = cleaned_dfs['Aménagement']
-    
-    # Colonnes finales à conserver
-    colonnes_finales = [
-        'AN_DEPOT', 'DENOM_DEM', 'SIREN_DEM', 'SIRET_DEM',
-        'LOCALITE_TRAVAUX', 'LOCALITE_DEM', 'TYPE_PROJET', 'NUMERO_PERMIS'
-    ]
-    
-    # Sélectionner uniquement les colonnes finales
-    def select_final_cols(df):
-        cols = [c for c in colonnes_finales if c in df.columns]
-        return df[cols].copy()
-    
-    df_log = select_final_cols(df_logements)
-    df_loc = select_final_cols(df_locaux)
-    df_dem = select_final_cols(df_demolir)
-    df_ame = select_final_cols(df_amenager)
-    
-    # Supprimer les dataframes originaux pour libérer la mémoire
-    del df_logements, df_locaux, df_demolir, df_amenager
-    
-    # Ajouter les colonnes manquantes avec NaN
-    all_cols = set()
-    for df in [df_log, df_loc, df_dem, df_ame]:
-        all_cols.update(df.columns)
-    
-    for df in [df_log, df_loc, df_dem, df_ame]:
-        for col in all_cols:
-            if col not in df.columns:
-                df[col] = None
-    
-    # Combiner tous les dataframes
-    df_all = pd.concat([df_log, df_loc, df_dem, df_ame], ignore_index=True)
-    
-    # Supprimer les dataframes temporaires
-    del df_log, df_loc, df_dem, df_ame
-    
-    # Convertir AN_DEPOT en numérique
-    if 'AN_DEPOT' in df_all.columns:
-        df_all['AN_DEPOT'] = pd.to_numeric(df_all['AN_DEPOT'], errors='coerce')
-    
-    # Convertir TYPE_PROJET en category pour réduire la mémoire
-    if 'TYPE_PROJET' in df_all.columns:
-        df_all['TYPE_PROJET'] = df_all['TYPE_PROJET'].astype('category')
-    
-    # Retourner le dataframe et les statistiques de suppression
-    return {
-        'data': df_all,
-        'suppressions': suppressions
-    }
+    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-# Chargement des données avec invalidation de cache basée sur le fichier communes
-result = load_data(_cache_key=get_cache_key())
-df_all = result['data']
-suppressions_data = result['suppressions']
+# --- Application ---
+df_all = load_data()
 
-# Titre
-st.title("🏗️ Explorateur de Permis de Construire - Toulouse")
-st.markdown("---")
+st.title("🏗️ Explorateur de Permis - Toulouse Métropole")
 
-# Barre latérale pour la recherche
 with st.sidebar:
-    # Bouton pour revenir à l'accueil
-    if st.button("🏠 Accueil", use_container_width=True):
-        st.session_state.reset_search = True
-        st.rerun()
-    
-    st.markdown("---")
     st.header("🔍 Recherche")
-    
-    # Choix du type de recherche
-    type_recherche = st.radio(
-        "Type de recherche",
-        ["Nom d'entreprise", "SIREN", "SIRET", "Toutes les données"]
-    )
-    
-    # Champ de recherche
-    if type_recherche == "Nom d'entreprise":
-        recherche = st.text_input(
-            "Nom de l'entreprise",
-            placeholder="Ex: TOULOUSE, BOUYGUES, etc."
-        )
-        col_recherche = 'DENOM_DEM'
-    elif type_recherche == "SIREN":
-        recherche = st.text_input(
-            "Numéro SIREN",
-            placeholder="Ex: 123456789"
-        )
-        col_recherche = 'SIREN_DEM'
-    elif type_recherche == "SIRET":
-        recherche = st.text_input(
-            "Numéro SIRET",
-            placeholder="Ex: 12345678900012"
-        )
-        col_recherche = 'SIRET_DEM'
+    voir_tout = st.checkbox("Afficher toutes les données", value=False)
+    if not voir_tout:
+        type_r = st.radio("Type", ["Nom d'entreprise", "SIREN", "SIRET"])
+        recherche = st.text_input("Valeur (ex: COGEDIM)")
+        col_r = {"Nom d'entreprise": 'DENOM_DEM', "SIREN": 'SIREN_DEM', "SIRET": 'SIRET_DEM'}[type_r]
     else:
-        st.info("ℹ️ Affichage de toutes les données disponibles")
         recherche = ""
-        col_recherche = None
-    
-    # Avertissement pour les recherches par nom
-    if type_recherche == "Nom d'entreprise":
-        st.warning(
-            "⚠️ **Important**: Seuls 29% des projets ont un nom d'entreprise. "
-            "Les logements et aménagements n'ont généralement pas de nom d'entreprise."
-        )
 
-# Filtrer les résultats
-if (recherche or type_recherche == "Toutes les données") and not st.session_state.reset_search:
-    # Filtrage selon le type de recherche
-    if type_recherche == "Nom d'entreprise":
-        # Normaliser la recherche et les données pour la comparaison
-        recherche_norm = normalize_text(recherche)
-        df_filtered = df_all[
-            df_all[col_recherche].apply(lambda x: recherche_norm in normalize_text(x))
-        ]
-    elif type_recherche == "SIREN":
-        # Pour SIREN et SIRET, recherche exacte (sensible aux tirets)
-        df_filtered = df_all[
-            df_all[col_recherche].astype(str).str.contains(recherche, na=False)
-        ]
-    elif type_recherche == "SIRET":
-        # Pour SIRET
-        df_filtered = df_all[
-            df_all[col_recherche].astype(str).str.contains(recherche, na=False)
-        ]
-    else:
-        # Toutes les données
-        df_filtered = df_all.copy()
+if voir_tout or (recherche and len(recherche) > 1):
+    # --- AFFICHAGE DES RÉSULTATS DE RECHERCHE (Tes onglets existants) ---
+    df_filtered = df_all.copy()
+    if not voir_tout:
+        df_filtered = df_filtered[df_filtered[col_r].astype(str).str.contains(recherche, case=False, na=False)]
     
-    if len(df_filtered) > 0:
-        st.success(f"✅ {len(df_filtered)} projet(s) trouvé(s)")
-        
-        # Statistiques générales
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Nombre de projets", len(df_filtered))
-        
-        with col2:
-            if 'AN_DEPOT' in df_filtered.columns and len(df_filtered['AN_DEPOT'].dropna()) > 0:
-                annee_min = int(df_filtered['AN_DEPOT'].min())
-                annee_max = int(df_filtered['AN_DEPOT'].max())
-                st.metric("Période", f"{annee_min} - {annee_max}")
-            else:
-                st.metric("Période", "N/A")
-        
-        with col3:
-            types = df_filtered['TYPE_PROJET'].nunique()
-            st.metric("Types de projets", types)
-        
-        with col4:
-            st.metric("Projets trouvés", len(df_filtered))
-        
-        # Onglets
+    if not df_filtered.empty:
+        # Métriques
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Projets trouvés", len(df_filtered))
+        c2.metric("Entreprises", df_filtered['DENOM_DEM'].nunique())
+        c3.metric("Période", f"{int(df_filtered['AN_DEPOT'].min())}-{int(df_filtered['AN_DEPOT'].max())}")
+
         tab1, tab2, tab3 = st.tabs(["📊 Statistiques", "📋 Tableau détaillé", "📈 Graphiques"])
-        
         with tab1:
-            st.subheader("Statistiques par type de projet")
-            
-            # Répartition par type
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                type_counts = df_filtered['TYPE_PROJET'].value_counts()
-                st.dataframe(
-                    type_counts.reset_index().rename(columns={'index': 'Type', 'TYPE_PROJET': 'Nombre'}),
-                    hide_index=True,
-                    use_container_width=True
-                )
-            
-            with col2:
-                fig_pie = px.pie(
-                    values=type_counts.values,
-                    names=type_counts.index,
-                    title="Répartition par type de projet"
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            
-            # Évolution par année
-            if 'AN_DEPOT' in df_filtered.columns and len(df_filtered['AN_DEPOT'].dropna()) > 0:
-                st.subheader("Évolution temporelle")
-                
-                projets_par_annee = df_filtered.dropna(subset=['AN_DEPOT']).groupby(['AN_DEPOT', 'TYPE_PROJET']).size().reset_index(name='Nombre')
-                
-                fig_line = px.line(
-                    projets_par_annee,
-                    x='AN_DEPOT',
-                    y='Nombre',
-                    color='TYPE_PROJET',
-                    markers=True,
-                    title="Nombre de projets par année et par type"
-                )
-                st.plotly_chart(fig_line, use_container_width=True)
-            
-            # Statistiques pour les projets logements
-            df_log_filtered = df_filtered[df_filtered['TYPE_PROJET'] == 'Logements']
-            if len(df_log_filtered) > 0:
-                st.subheader("Projets de logements")
-                st.info(f"Nombre de projets logements: {len(df_log_filtered)}")
-        
+            st.plotly_chart(px.pie(df_filtered, names='TYPE_PROJET', title="Répartition"), use_container_width=True)
+            evol = df_filtered.groupby(['AN_DEPOT', 'TYPE_PROJET']).size().reset_index(name='N')
+            st.plotly_chart(px.line(evol, x='AN_DEPOT', y='N', color='TYPE_PROJET', markers=True), use_container_width=True)
         with tab2:
-            st.subheader("Liste des projets")
-            
-            # Colonnes à afficher
-            cols_display = [
-                'TYPE_PROJET', 'NUMERO_PERMIS', 'DENOM_DEM', 'SIREN_DEM',
-                'AN_DEPOT', 'LOCALITE_TRAVAUX', 'LOCALITE_DEM'
-            ]
-            cols_display = [c for c in cols_display if c in df_filtered.columns]
-            
-            # Affichage du tableau
-            st.dataframe(
-                df_filtered[cols_display].reset_index(drop=True),
-                use_container_width=True,
-                height=400
-            )
-            
-            # Bouton de téléchargement
-            csv = df_filtered.to_csv(index=False, sep=';')
-            st.download_button(
-                label="📥 Télécharger les résultats (CSV)",
-                data=csv,
-                file_name=f"permis_{recherche}.csv",
-                mime="text/csv"
-            )
-        
+            st.dataframe(df_filtered, use_container_width=True)
         with tab3:
-            st.subheader("Visualisations complémentaires")
-            
-            # Localisation des projets
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if 'LOCALITE_TRAVAUX' in df_filtered.columns:
-                    communes = df_filtered['LOCALITE_TRAVAUX'].value_counts().head(10)
-                    fig_communes = px.bar(
-                        x=communes.values,
-                        y=communes.index,
-                        orientation='h',
-                        labels={'x': 'Nombre de projets', 'y': 'Localité'},
-                        title="Top 10 des localités"
-                    )
-                    st.plotly_chart(fig_communes, use_container_width=True)
-            
-            with col2:
-                if 'TYPE_PROJET' in df_filtered.columns:
-                    types = df_filtered['TYPE_PROJET'].value_counts()
-                    fig_types = px.bar(
-                        x=types.index,
-                        y=types.values,
-                        labels={'x': 'Type de projet', 'y': 'Nombre'},
-                        title="Distribution par type de projet"
-                    )
-                    st.plotly_chart(fig_types, use_container_width=True)
-    
-    elif recherche.strip() != "":
-        st.warning(f"❌ Aucun projet trouvé pour '{recherche}'")
-        
-        # Suggérer quelques entreprises présentes
-        st.info("💡 Quelques entreprises présentes dans la base :")
-        entreprises_sample = df_all['DENOM_DEM'].dropna().unique()[:10]
-        for ent in entreprises_sample:
-            st.text(f"  • {ent}")
+            top_loc = df_filtered['LOCALITE_TRAVAUX'].value_counts().head(10)
+            st.plotly_chart(px.bar(x=top_loc.values, y=top_loc.index, orientation='h', title="Top 10 Communes"))
+    else:
+        st.warning("Aucun résultat.")
 
 else:
-    # Réinitialiser le flag
-    if st.session_state.reset_search:
-        st.session_state.reset_search = False
+    # --- NOUVELLE PAGE DE GARDE (TOP ACTEURS) ---
+    st.info("👈 Saisissez un nom d'entreprise ou un SIREN dans la barre latérale pour explorer les détails.")
     
-    # Affichage initial
-    st.info("👈 Utilisez la barre latérale pour rechercher une entreprise ou un numéro SIREN/SIRET, ou sélectionnez 'Toutes les données'")
-    
-    st.success("✅ **Données filtrées**: Les 37 communes de Toulouse Métropole (Département 31)")
-    
-    st.warning("⚠️ **Attention données incomplètes**: Seuls **29% des projets** ont un nom d'entreprise associé. "
-               "Les projets de logements et d'aménagement n'ont généralement pas d'entreprise renseignée.")
-    
-    # Afficher les statistiques de nettoyage des données
-    with st.expander("📋 Détails du nettoyage des données"):
-        st.markdown("**Lignes supprimées par défaut de données:**")
+    st.subheader("🏢 Classement des entreprises les plus actives")
+    st.markdown("Acteurs ayant déposé **au moins 10 dossiers** sur le périmètre de Toulouse Métropole.")
+
+    if not df_all.empty:
+        # Calcul du top
+        stats_ent = df_all[df_all['DENOM_DEM'].notna()]['DENOM_DEM'].value_counts().reset_index()
+        stats_ent.columns = ['Entreprise', 'Nombre de projets']
         
-        for categorie, stats in suppressions_data.items():
-            avant = stats['avant']
-            apres = stats['apres']
-            supprimees = avant - apres
-            pct = (supprimees / avant * 100) if avant > 0 else 0
+        # Filtre 10+ et tri
+        top_acteurs = stats_ent[stats_ent['Nombre de projets'] >= 10].sort_values(by='Nombre de projets', ascending=False)
+
+        if not top_acteurs.empty:
+            col_table, col_info = st.columns([2, 1])
             
-            st.markdown(f"**{categorie}**")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Avant", avant)
-            with col2:
-                st.metric(f"Supprimées ({pct:.1f}%)", supprimees)
+            with col_table:
+                st.dataframe(
+                    top_acteurs,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Entreprise": st.column_config.TextColumn("Nom de l'entreprise"),
+                        "Nombre de projets": st.column_config.ProgressColumn(
+                            "Nombre de permis",
+                            format="%d",
+                            min_value=0,
+                            max_value=int(top_acteurs['Nombre de projets'].max())
+                        ),
+                    }
+                )
             
-            # Détails des suppressions
-            if stats['details']:
-                for raison, nombre in stats['details'].items():
-                    st.text(f"  • {raison}: {nombre} lignes")
-            st.markdown("")
-    
-    # Statistiques globales
-    st.subheader("📊 Aperçu général - Toulouse Métropole")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total de projets", len(df_all))
-    
-    with col2:
-        if 'DENOM_DEM' in df_all.columns:
-            with_denom = df_all['DENOM_DEM'].notna().sum()
-            st.metric("Avec nom d'entreprise", f"{with_denom} ({100*with_denom/len(df_all):.0f}%)")
+            with col_info:
+                # Statistiques de résumé
+                total_projets = len(df_all)
+                st.metric("Total des permis en base", total_projets)
+                st.metric("Entreprises recensées", len(stats_ent))
+                
+                # Petit donut chart pour le fun
+                fig_donut = px.pie(
+                    df_all, 
+                    names='TYPE_PROJET', 
+                    hole=0.5,
+                    title="Répartition par type (Global)"
+                )
+                fig_donut.update_layout(showlegend=False)
+                st.plotly_chart(fig_donut, use_container_width=True)
         else:
-            st.metric("Entreprises distinctes", "N/A")
-    
-    with col3:
-        if 'AN_DEPOT' in df_all.columns and len(df_all['AN_DEPOT'].dropna()) > 0:
-            annee_min = int(df_all['AN_DEPOT'].min())
-            annee_max = int(df_all['AN_DEPOT'].max())
-            st.metric("Période couverte", f"{annee_min} - {annee_max}")
-        else:
-            st.metric("Période couverte", "N/A")
-    
-    with col4:
-        st.metric("Types de projets", df_all['TYPE_PROJET'].nunique())
-    
-    # Graphique de répartition
-    st.subheader("Répartition des projets par type")
-    type_counts = df_all['TYPE_PROJET'].value_counts()
-    fig = px.bar(
-        x=type_counts.index,
-        y=type_counts.values,
-        labels={'x': 'Type de projet', 'y': 'Nombre'},
-        color=type_counts.index
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Top entreprises (avec plus de 10 projets)
-    st.subheader("Top entreprises (10+ projets)")
-    
-    # Calculer le nombre de projets par entreprise
-    entreprises_count = df_all[df_all['DENOM_DEM'].notna()]['DENOM_DEM'].value_counts()
-    top_entreprises = entreprises_count[entreprises_count >= 10].sort_values(ascending=False)
-    
-    if len(top_entreprises) > 0:
-        fig_entreprises = px.bar(
-            x=top_entreprises.index,
-            y=top_entreprises.values,
-            labels={'x': 'Entreprise', 'y': 'Nombre de projets'},
-            title=f"Répartition des {len(top_entreprises)} entreprises ayant 10+ projets",
-            color=top_entreprises.values,
-            color_continuous_scale='Viridis'
-        )
-        fig_entreprises.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig_entreprises, use_container_width=True)
-        
-        # Table récapitulative
-        st.dataframe(
-            top_entreprises.reset_index().rename(columns={'index': 'Entreprise', 'DENOM_DEM': 'Nombre de projets'}),
-            hide_index=True,
-            use_container_width=True
-        )
-    else:
-        st.info("Aucune entreprise avec 10+ projets dans les données.")
+            st.write("Aucune entreprise ne dépasse les 10 projets dans la base.")
